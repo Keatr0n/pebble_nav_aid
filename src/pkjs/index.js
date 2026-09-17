@@ -7,7 +7,8 @@
 
 var Clay = require("@rebble/clay");
 var clayConfig = require("./config.json");
-var clay = new Clay(clayConfig, null, { autoHandleEvents: false });
+var customClay = require("./custom-clay.js");
+var clay = new Clay(clayConfig, customClay, { autoHandleEvents: false });
 
 var route = require("./route.js");
 var traffic = require("./traffic.js");
