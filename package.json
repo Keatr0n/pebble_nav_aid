@@ -1,0 +1,106 @@
+{
+  "name": "pebble_nav_aid",
+  "author": "Keatr0n",
+  "version": "1.0.0",
+  "keywords": [
+    "pebble-app"
+  ],
+  "private": true,
+  "dependencies": {
+    "@rebble/clay": "^1.0.10"
+  },
+  "pebble": {
+    "displayName": "Nav Aid",
+    "uuid": "c9203777-b015-45f1-87d2-0b38d2d52959",
+    "sdkVersion": "3",
+    "projectType": "native",
+    "enableMultiJS": true,
+    "capabilities": [
+      "configurable",
+      "location"
+    ],
+    "targetPlatforms": [
+      "emery",
+      "flint",
+      "gabbro"
+    ],
+    "watchapp": {
+      "watchface": false
+    },
+    "messageKeys": [
+      "AppReady",
+      "StatusMsg",
+      "GpsState",
+      "PosLat",
+      "PosLon",
+      "PosAlt",
+      "PosSpd",
+      "PosTrk",
+      "PosAcc",
+      "PosTs",
+      "PosDecl",
+      "WptReset",
+      "WptTotal",
+      "WptIdx",
+      "WptName",
+      "WptLat",
+      "WptLon",
+      "TfcTotal",
+      "TfcIdx",
+      "TfcCall",
+      "TfcType",
+      "TfcDist",
+      "TfcBrg",
+      "TfcAlt",
+      "TfcVs",
+      "TfcGs",
+      "WxStation",
+      "WxRaw",
+      "WxWdir",
+      "WxWspd",
+      "WxGust",
+      "WxVis",
+      "WxTemp",
+      "WxDewp",
+      "WxAltim",
+      "WxCat",
+      "WxAge",
+      "WxCeil",
+      "WxElev",
+      "SunRise",
+      "SunSet",
+      "CfgFuelCap",
+      "CfgFuelBurn",
+      "CfgFuelReserve",
+      "CfgFuelTaxi",
+      "CfgFuelUnit",
+      "CfgTfcEnable",
+      "CfgTfcRadius",
+      "CfgTfcAltFilter",
+      "CfgAlertTfc",
+      "CfgAlertFuel",
+      "CfgAlertWpt",
+      "CfgAutoSeq",
+      "CfgMagnetic",
+      "CfgAltimUnit",
+      "CfgPages",
+      "CfgPatternAlt",
+      "PageActive",
+      "ReqRoute",
+      "ReqTraffic",
+      "ReqWx",
+      "RouteText",
+      "CfgPagesList"
+    ],
+    "resources": {
+      "media": [
+        {
+          "type": "bitmap",
+          "name": "IMAGE_MENU_ICON",
+          "file": "images/menu_icon.png",
+          "menuIcon": true
+        }
+      ]
+    }
+  }
+}

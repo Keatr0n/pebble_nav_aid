@@ -1,0 +1,148 @@
+[
+  { "type": "heading", "defaultValue": "Nav Aid", "size": 1 },
+  {
+    "type": "text",
+    "defaultValue": "A GPS nav aid for GA pilots. Situational awareness only &mdash; not a certified navigation or traffic system, and no substitute for charts, a flight plan, or looking outside."
+  },
+
+  { "type": "section", "items": [
+    { "type": "heading", "defaultValue": "Route", "size": 3 },
+    {
+      "type": "text",
+      "defaultValue": "One waypoint per line, in order. Up to 24.<br><br><b>YSBK</b> &mdash; airport or ident, worldwide<br><b>YSBK 135/12</b> &mdash; 12 NM on the 135 radial (magnetic) from YSBK<br><b>PARRA -33.815 151.001</b> &mdash; your own point, decimal degrees<br><b>PARRA S33 48.9 E151 0.1</b> &mdash; your own point, degrees and minutes<br><b>Katoomba Scenic World</b> &mdash; place-name lookup<br><br>Looked-up points are cached, so a saved route still loads with no signal."
+    },
+    {
+      "type": "textarea",
+      "messageKey": "RouteText",
+      "label": "Waypoints",
+      "defaultValue": "",
+      "attributes": { "placeholder": "YSBK\nYWOL\nYSHL", "limit": 1200 }
+    }
+  ]},
+
+  { "type": "section", "items": [
+    { "type": "heading", "defaultValue": "Fuel", "size": 3 },
+    {
+      "type": "select",
+      "messageKey": "CfgFuelUnit",
+      "label": "Fuel units",
+      "defaultValue": "1",
+      "options": [
+        { "label": "Litres", "value": "1" },
+        { "label": "US gallons", "value": "0" },
+        { "label": "Imperial gallons", "value": "2" },
+        { "label": "Kilograms", "value": "3" },
+        { "label": "Pounds", "value": "4" }
+      ]
+    },
+    {
+      "type": "input",
+      "messageKey": "CfgFuelCap",
+      "label": "Usable fuel when full",
+      "defaultValue": "150",
+      "attributes": { "type": "number", "step": "any", "min": "0", "placeholder": "150" }
+    },
+    {
+      "type": "input",
+      "messageKey": "CfgFuelBurn",
+      "label": "Cruise burn per hour",
+      "defaultValue": "32",
+      "attributes": { "type": "number", "step": "any", "min": "0", "placeholder": "32" }
+    },
+    {
+      "type": "input",
+      "messageKey": "CfgFuelTaxi",
+      "label": "Start, taxi and run-up allowance",
+      "description": "Deducted as soon as the engine clock starts.",
+      "defaultValue": "5",
+      "attributes": { "type": "number", "step": "any", "min": "0" }
+    },
+    {
+      "type": "slider",
+      "messageKey": "CfgFuelReserve",
+      "label": "Fixed reserve (minutes)",
+      "description": "Endurance turns red and the watch buzzes once when only this much is left.",
+      "defaultValue": 45,
+      "min": 0, "max": 90, "step": 5
+    }
+  ]},
+
+  { "type": "section", "items": [
+    { "type": "heading", "defaultValue": "Traffic", "size": 3 },
+    {
+      "type": "text",
+      "defaultValue": "Community ADS-B from adsb.fi. Only aircraft transmitting ADS-B and covered by a volunteer receiver appear. Treat an empty list as no information, not as no traffic."
+    },
+    { "type": "toggle", "messageKey": "CfgTfcEnable", "label": "Show nearby traffic", "defaultValue": true },
+    {
+      "type": "slider",
+      "messageKey": "CfgTfcRadius",
+      "label": "Search radius (NM)",
+      "defaultValue": 20, "min": 5, "max": 60, "step": 5
+    },
+    {
+      "type": "select",
+      "messageKey": "CfgTfcAltFilter",
+      "label": "Ignore traffic above/below",
+      "defaultValue": "5000",
+      "options": [
+        { "label": "2000 ft", "value": "2000" },
+        { "label": "5000 ft", "value": "5000" },
+        { "label": "10000 ft", "value": "10000" },
+        { "label": "Show all", "value": "60000" }
+      ]
+    }
+  ]},
+
+  { "type": "section", "items": [
+    { "type": "heading", "defaultValue": "Display", "size": 3 },
+    {
+      "type": "toggle",
+      "messageKey": "CfgMagnetic",
+      "label": "Magnetic courses",
+      "description": "Off shows true. Variation is computed from the World Magnetic Model for wherever you are.",
+      "defaultValue": true
+    },
+    {
+      "type": "select",
+      "messageKey": "CfgAltimUnit",
+      "label": "Altimeter setting",
+      "defaultValue": "0",
+      "options": [
+        { "label": "hPa (QNH)", "value": "0" },
+        { "label": "inHg", "value": "1" }
+      ]
+    },
+    {
+      "type": "toggle",
+      "messageKey": "CfgAutoSeq",
+      "label": "Auto-sequence waypoints",
+      "description": "Advances on its own as you reach or pass each one. Off means you press SELECT.",
+      "defaultValue": true
+    },
+    {
+      "type": "input",
+      "messageKey": "CfgPatternAlt",
+      "label": "Circuit altitude (ft AMSL)",
+      "description": "Used for the top-of-descent figure on the Info page.",
+      "defaultValue": "1000",
+      "attributes": { "type": "number", "step": "100", "min": "0" }
+    },
+    {
+      "type": "checkboxgroup",
+      "messageKey": "CfgPagesList",
+      "label": "Pages to show",
+      "defaultValue": [true, true, true, true, true, true],
+      "options": ["Nav", "Timer", "Fuel", "Traffic", "Weather", "Info"]
+    }
+  ]},
+
+  { "type": "section", "items": [
+    { "type": "heading", "defaultValue": "Alerts", "size": 3 },
+    { "type": "toggle", "messageKey": "CfgAlertTfc", "label": "Buzz for close traffic", "description": "Within 3 NM and 1200 ft, at most once a minute.", "defaultValue": true },
+    { "type": "toggle", "messageKey": "CfgAlertFuel", "label": "Buzz when down to reserve", "defaultValue": true },
+    { "type": "toggle", "messageKey": "CfgAlertWpt", "label": "Buzz on waypoint sequence", "defaultValue": true }
+  ]},
+
+  { "type": "submit", "defaultValue": "Save" }
+]
