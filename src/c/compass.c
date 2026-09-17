@@ -46,43 +46,66 @@ bool compass_usable(void) {
   return s_subscribed && g.compass_status >= CompassStatusCalibrating;
 }
 
+// What the top of the radar actually is, once the fallbacks have had their
+// say: heading needs a usable magnetometer, track needs a fix and enough
+// speed for it to mean anything, and north is what is left. The reference
+// angle and the label both come from this, so the picture and the words
+// underneath it cannot disagree.
+static OrientMode effective_orient(void) {
+  if (g.cfg.traffic_orient == ORIENT_NORTH) return ORIENT_NORTH;
+  if (g.cfg.traffic_orient == ORIENT_HEADING && compass_usable()) {
+    return ORIENT_HEADING;
+  }
+  if (g.fix.valid && g.gs_smooth_kt > 20.0f) return ORIENT_TRACK;
+  return ORIENT_NORTH;
+}
+
 // Degrees TRUE that the top of the radar represents.
 float compass_reference_deg(void) {
-  switch (g.cfg.traffic_orient) {
-    case ORIENT_NORTH:
-      return 0.0f;
+  switch (effective_orient()) {
+    case ORIENT_HEADING: {
+      float t = (float)g.compass_deg;
+      if (g.decl_valid) t += (float)g.decl_x10 / 10.0f;  // magnetic -> true
+      return geo_norm360(t);
+    }
 
-    case ORIENT_HEADING:
-      if (compass_usable()) {
-        float t = (float)g.compass_deg;
-        if (g.decl_valid) t += (float)g.decl_x10 / 10.0f;  // magnetic -> true
-        return geo_norm360(t);
-      }
-      // Fall through to track when the compass has nothing trustworthy yet.
-      /* fallthrough */
+    case ORIENT_TRACK:
+      return geo_norm360((float)g.fix.trk_x10 / 10.0f);
 
     default:
-      if (g.fix.valid && g.gs_smooth_kt > 20.0f) {
-        return geo_norm360((float)g.fix.trk_x10 / 10.0f);
-      }
       return 0.0f;
   }
 }
 
+// The label always names what the top of the radar actually is, with the
+// reason for any fallback in brackets. Telling a pilot "HDG UP" while the
+// picture is in fact track-up leaves them guessing what they are looking at.
+//
+// The reason is not decoration. Every mode can degrade to north-up, so
+// without it a stationary watch prints the same string for two of the three
+// SELECT positions and the cycle looks broken -- which is how this was
+// found. Naming why each mode gave up keeps all three distinct in every
+// combination of fix and magnetometer; test/test_compass.c pins that.
 const char *compass_mode_label(void) {
-  switch (g.cfg.traffic_orient) {
-    case ORIENT_NORTH:
-      return "N UP";
+  bool selected_heading = g.cfg.traffic_orient == ORIENT_HEADING;
+
+  switch (effective_orient()) {
     case ORIENT_HEADING:
-      // When the magnetometer cannot deliver, the radar quietly uses track
-      // instead. The label has to say so: telling a pilot "NO COMPASS" while
-      // the picture is in fact track-up leaves them guessing what they are
-      // looking at.
-      if (!s_subscribed) return "TRK UP";
-      if (g.compass_status == CompassStatusUnavailable) return "TRK (NO MAG)";
-      if (g.compass_status < CompassStatusCalibrating) return "TRK (MAG CAL)";
       return "HDG UP";
+
+    case ORIENT_TRACK:
+      if (!selected_heading) return "TRK UP";
+      return g.compass_status == CompassStatusUnavailable ? "TRK (NO MAG)"
+                                                          : "TRK (MAG CAL)";
+
     default:
-      return (g.fix.valid && g.gs_smooth_kt > 20.0f) ? "TRK UP" : "N UP";
+      if (g.cfg.traffic_orient == ORIENT_NORTH) return "N UP";
+      if (selected_heading) {
+        // The magnetometer is the reason we are not in the selected mode,
+        // even though track has since failed us too.
+        return g.compass_status == CompassStatusUnavailable ? "N (NO MAG)"
+                                                            : "N (MAG CAL)";
+      }
+      return g.fix.valid ? "N (SLOW)" : "N (NO GPS)";
   }
 }

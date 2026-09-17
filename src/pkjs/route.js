@@ -285,17 +285,29 @@ function resolveLine(line, cb) {
 
 // Resolves lines one at a time rather than in parallel: it keeps the order
 // stable, and it is gentle on free geocoders that rate-limit by IP.
+//
+// Calls back with (waypoints, errors, dropped). `dropped` is how many lines
+// were left unresolved because the route was already full: they used to be
+// discarded in silence, which is the same sin as guessing at an ident -- the
+// pilot ends up flying a route that is not the one they typed and has no way
+// of knowing.
 function resolve(text, maxWaypoints, onProgress, onDone) {
   var lines = String(text || "").split(/[\r\n;]+/);
   var out = [];
   var errors = [];
   var i = 0;
 
-  function step() {
-    if (i >= lines.length || out.length >= maxWaypoints) {
-      onDone(out, errors);
-      return;
+  function remainingLines() {
+    var n = 0;
+    for (var j = i; j < lines.length; j++) {
+      if (lines[j].trim().length > 0) n++;
     }
+    return n;
+  }
+
+  function step() {
+    if (out.length >= maxWaypoints) { onDone(out, errors, remainingLines()); return; }
+    if (i >= lines.length) { onDone(out, errors, 0); return; }
     var line = lines[i++];
     if (line.trim().length === 0) { step(); return; }
     resolveLine(line, function (err, wpt) {

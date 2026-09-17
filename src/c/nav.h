@@ -27,7 +27,8 @@ typedef struct {
   char type[TFC_TYPE_LEN];
   int16_t dist_x10;  // nautical miles * 10, from us
   int16_t brg;       // degrees true, from us toward the target
-  int32_t alt_ft;    // barometric altitude, UNKNOWN_I32 if not reported
+  int32_t alt_ft;    // geometric altitude, comparable with our own GPS
+                     // altitude; UNKNOWN_I32 if the target reports none
   int16_t vs_fpm;
   int16_t gs_kt;
 } Traffic;
@@ -180,6 +181,8 @@ const char *fmt_fuel_unit(void);
 // state.c
 void state_init(void);
 void state_save(void);
+// Same, but coalesced: for state a button can change several times a second.
+void state_save_soon(void);
 void state_on_fix(void);
 void state_next_wpt(void);
 void state_prev_wpt(void);

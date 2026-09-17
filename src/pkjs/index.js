@@ -17,7 +17,8 @@ var magvar = require("./magvar.js");
 var sun = require("./sun.js");
 
 var MAX_WAYPOINTS = 24;
-var MAX_TRAFFIC = 5;
+// Must match MAX_TRAFFIC in src/c/nav.h -- the watch has room for this many.
+var MAX_TRAFFIC = 6;
 
 var POSITION_MIN_INTERVAL_MS = 2000;
 
@@ -30,6 +31,8 @@ var TRAFFIC_INTERVAL_BACKGROUND_MS = 60000;
 var TRAFFIC_MAX_INTERVAL_MS = 240000;
 
 var WX_INTERVAL_MS = 10 * 60 * 1000;
+// First retry after a failed fetch; doubles up to WX_INTERVAL_MS.
+var WX_RETRY_MS = 60 * 1000;
 // METARs are reissued twice an hour at best, so time alone is a poor trigger.
 // Moving this far means the nearest reporting station has probably changed.
 var WX_REFRESH_NM = 20;
@@ -75,6 +78,15 @@ var trafficInFlight = false;
 var lastWxAt = 0;
 var lastWxPos = null;
 var wxInFlight = false;
+// A failed METAR used to cost the full ten minutes before anything tried
+// again, because the attempt stamped the clock on its way out and nothing
+// rolled it back. Failures now come back quickly and only then ease off.
+var wxFailures = 0;
+var wxRetryAt = 0;
+// QNH from the last METAR, used to carry ADS-B pressure altitudes to a height
+// that can be compared with our own GPS altitude.
+var lastQnhHpa = null;
+var lastRouteSendAt = 0;
 var activePage = -1;
 var lastSunDay = null;
 var watchId = null;
@@ -82,31 +94,26 @@ var routeSending = false;
 
 // --------------------------------------------------------------- outbox
 
-// Only one AppMessage may be in flight at a time, so everything funnels
-// through a queue. Old entries are dropped rather than the new ones: a stale
-// position is worth less than the current one.
-var queue = [];
-var sending = false;
-var QUEUE_LIMIT = 40;
+// Everything phone-to-watch goes through the outbox, which knows which
+// messages may be dropped to make room (positions) and which have to be
+// retried and confessed to if lost (route, config). See outbox.js.
+var routeDirty = false;
+var routeResends = 0;
 
-function enqueue(dict) {
-  if (queue.length >= QUEUE_LIMIT) queue.shift();
-  queue.push(dict);
-  pump();
+var outbox = require("./outbox.js").create({
+  send: function (dict, ok, fail) { Pebble.sendAppMessage(dict, ok, fail); },
+  onLoss: function () { routeDirty = true; },
+  onSent: function () { routeResends = 0; }
+});
+
+function enqueue(dict, opts) {
+  outbox.enqueue(dict, opts);
 }
 
-function pump() {
-  if (sending || queue.length === 0) return;
-  sending = true;
-  var dict = queue.shift();
-  Pebble.sendAppMessage(dict,
-    function () { sending = false; pump(); },
-    function (e) {
-      console.log("send failed: " + JSON.stringify(e));
-      sending = false;
-      pump();
-    });
-}
+// Positions and traffic can both be dropped: another position is along in two
+// seconds, and a traffic set that loses a message is discarded by the watch
+// and replaced by the next poll. Route, config and status cannot.
+var DROPPABLE = { droppable: true };
 
 function status(msg) {
   enqueue({ StatusMsg: String(msg).substring(0, 39) });
@@ -209,6 +216,8 @@ function rememberRouteSent() {
 
 function sendRoute() {
   if (routeSending) return;
+  routeDirty = false;
+  lastRouteSendAt = Date.now();
   if (!settings.routeText || settings.routeText.trim().length === 0) {
     enqueue({ WptTotal: 0, WptReset: 1 });
     rememberRouteSent();
@@ -217,7 +226,8 @@ function sendRoute() {
   routeSending = true;
   var changed = routeChangedSinceLastSend();
 
-  route.resolve(settings.routeText, MAX_WAYPOINTS, null, function (wpts, errors) {
+  route.resolve(settings.routeText, MAX_WAYPOINTS, null,
+                function (wpts, errors, dropped) {
     routeSending = false;
     rememberRouteSent();
     enqueue({ WptTotal: wpts.length, WptReset: changed ? 1 : 0 });
@@ -230,8 +240,11 @@ function sendRoute() {
       });
     }
     // Name the offender: "2 not found" leaves the pilot guessing which leg of
-    // their route is missing.
-    if (errors.length > 0) {
+    // their route is missing. A route too long to fit gets said out loud for
+    // the same reason -- the legs past the limit are simply not being flown.
+    if (dropped > 0) {
+      status(dropped + " past " + MAX_WAYPOINTS + " dropped");
+    } else if (errors.length > 0) {
       var msg = "Not found: " + errors.slice(0, 2).join(", ");
       if (errors.length > 2) msg += " +" + (errors.length - 2);
       status(msg);
@@ -294,7 +307,7 @@ function onPosition(pos) {
     };
     var decl = declinationFor(lastFix.lat, lastFix.lon, lastFix.altFt);
     if (decl !== null) dict.PosDecl = Math.round(decl * 10);
-    enqueue(dict);
+    enqueue(dict, DROPPABLE);
   }
 
   maybeSendSun();
@@ -304,8 +317,28 @@ function onPosition(pos) {
 // callback. Geolocation can go quiet -- no fix indoors, the phone backgrounding
 // the app -- and when it did, traffic and weather used to stop updating with
 // nothing on the watch to say so.
+// A route that lost a message in a stalled link is incomplete on the watch
+// and cannot repair itself; resending is cheap because every point it needs
+// is already in the resolver's cache.
+var ROUTE_RESEND_MIN_MS = 30000;
+var ROUTE_RESEND_MAX_MS = 300000;
+
+function maybeResendRoute() {
+  if (!routeDirty || routeSending) return;
+  // A link that is properly down would otherwise have the whole route thrown
+  // at it every thirty seconds forever, so the gap widens while it keeps
+  // failing and resets the moment one gets through.
+  var gap = Math.min(ROUTE_RESEND_MIN_MS * Math.pow(2, routeResends),
+                     ROUTE_RESEND_MAX_MS);
+  if (Date.now() - lastRouteSendAt < gap) return;
+  routeResends++;
+  sendConfig();
+  sendRoute();
+}
+
 function pollTick() {
   maybeSendSun();
+  maybeResendRoute();
   maybePollTraffic();
   maybePollWx();
 }
@@ -365,7 +398,8 @@ function maybePollTraffic(force) {
     radiusNm: settings.tfcRadius,
     altFilterFt: settings.tfcAltFilter,
     myAltFt: lastFix.altFt,
-    max: MAX_TRAFFIC
+    max: MAX_TRAFFIC,
+    qnhHpa: lastQnhHpa
   }, function (err, list) {
     trafficInFlight = false;
     if (err) {
@@ -375,7 +409,7 @@ function maybePollTraffic(force) {
     }
     trafficBackoff = 1;
 
-    enqueue({ TfcTotal: list.length });
+    enqueue({ TfcTotal: list.length }, DROPPABLE);
     for (var i = 0; i < list.length; i++) {
       var t = list[i];
       var d = {
@@ -390,7 +424,7 @@ function maybePollTraffic(force) {
       // Leaving the key out entirely is how the watch learns the altitude is
       // unknown, rather than being told a wrong number.
       if (t.altFt !== null) d.TfcAlt = t.altFt;
-      enqueue(d);
+      enqueue(d, DROPPABLE);
     }
   });
 }
@@ -401,14 +435,25 @@ function maybePollWx(force) {
   if (!lastFix || wxInFlight) return;
   var now = Date.now();
   var movedFar = lastWxPos && nmBetween(lastWxPos, lastFix) >= WX_REFRESH_NM;
-  if (!force && !movedFar && now - lastWxAt < WX_INTERVAL_MS) return;
+  var retryDue = wxRetryAt > 0 && now >= wxRetryAt;
+  if (!force && !movedFar && !retryDue && now - lastWxAt < WX_INTERVAL_MS) return;
   lastWxAt = now;
   lastWxPos = { lat: lastFix.lat, lon: lastFix.lon };
   wxInFlight = true;
 
   weather.fetchNearest(lastFix.lat, lastFix.lon, function (err, m) {
     wxInFlight = false;
-    if (err || !m) return;
+    if (err || !m) {
+      // A minute, then two, then four, up to the ordinary interval. One
+      // dropout should not cost the same as no weather at all.
+      wxFailures++;
+      wxRetryAt = Date.now() +
+          Math.min(WX_RETRY_MS * Math.pow(2, wxFailures - 1), WX_INTERVAL_MS);
+      return;
+    }
+    wxFailures = 0;
+    wxRetryAt = 0;
+    if (typeof m.altimHpaX10 === "number") lastQnhHpa = m.altimHpaX10 / 10;
     var d = {
       WxStation: m.station,
       WxRaw: m.raw,
@@ -425,7 +470,7 @@ function maybePollWx(force) {
     };
     // Omitted when the wind is variable, so the watch can show VRB.
     if (m.wdir !== null) d.WxWdir = m.wdir;
-    enqueue(d);
+    enqueue(d, DROPPABLE);
   });
 }
 

@@ -9,6 +9,19 @@ static GRect row(GRect b, int16_t *y, int16_t h) {
   return r;
 }
 
+// Traffic is polled every 15 s with the radar up and every 60 s behind it, and
+// a failing poll backs off to four minutes. Ninety seconds is therefore well
+// past any healthy cadence but short of crying wolf over one missed poll.
+#define TFC_STALE_S 90
+
+static uint32_t traffic_age_s(void) {
+  if (g.tfc_ts == 0) return UINT32_MAX;
+  time_t now = time(NULL);
+  return now > g.tfc_ts ? (uint32_t)(now - g.tfc_ts) : 0;
+}
+
+static bool traffic_is_stale(void) { return traffic_age_s() > TFC_STALE_S; }
+
 // A target close enough and level enough to be worth looking for out the
 // window. Deliberately conservative -- this is awareness, not separation.
 static bool is_close(const Traffic *t) {
@@ -67,7 +80,10 @@ static void draw_radar(GContext *ctx, GRect b) {
   graphics_draw_circle(ctx, c, radius);
   graphics_draw_circle(ctx, c, radius / 2);
 
-  // Cardinal ticks, so "up" is anchored to something.
+  // Four ticks fixed to the screen. These are NOT cardinal points -- under
+  // track-up and heading-up they are the 12, 3, 6 and 9 o'clock references
+  // a pilot actually calls traffic by, and the list view names targets the
+  // same way. They only happen to be cardinal when north is up.
   for (int i = 0; i < 4; i++) {
     float a = (float)i * 90.0f * (RADAR_PI / 180.0f);
     int16_t x1 = c.x + (int16_t)(nav_sinf(a) * (float)(radius - 4));
@@ -75,6 +91,21 @@ static void draw_radar(GContext *ctx, GRect b) {
     int16_t x2 = c.x + (int16_t)(nav_sinf(a) * (float)radius);
     int16_t y2 = c.y - (int16_t)(nav_cosf(a) * (float)radius);
     graphics_draw_line(ctx, GPoint(x1, y1), GPoint(x2, y2));
+  }
+
+  // True north, which is the one direction the fixed ticks cannot show once
+  // the picture is rotated. Longer and in the accent colour so it reads as a
+  // different kind of mark; under north-up it simply sits on the 12 o'clock
+  // tick and makes it bolder.
+  {
+    float na = -ref * (RADAR_PI / 180.0f);
+    graphics_context_set_stroke_color(ctx, ui_accent);
+    graphics_draw_line(ctx,
+        GPoint(c.x + (int16_t)(nav_sinf(na) * (float)(radius - 9)),
+               c.y - (int16_t)(nav_cosf(na) * (float)(radius - 9))),
+        GPoint(c.x + (int16_t)(nav_sinf(na) * (float)radius),
+               c.y - (int16_t)(nav_cosf(na) * (float)radius)));
+    graphics_context_set_stroke_color(ctx, ui_dim);
   }
 
   // Own ship. Under track-up it points straight up by definition; under
@@ -115,8 +146,21 @@ static void draw_radar(GContext *ctx, GRect b) {
   snprintf(buf, sizeof(buf), "%s · %d NM", compass_mode_label(), range);
   ui_text(ctx, GRect(b.origin.x, fy, b.size.w, 16),
           FONT_KEY_GOTHIC_14, buf, GTextAlignmentCenter, ui_dim);
+
+  // Blips are drawn crisply whatever their age, and a radar that has stopped
+  // updating looks exactly like one that is working. The list view has always
+  // carried the age of the picture; the radar has to as well.
+  uint32_t age = traffic_age_s();
+  if (age == UINT32_MAX) {
+    snprintf(buf, sizeof(buf), "alt x100 ft");
+  } else if (age < 600) {
+    snprintf(buf, sizeof(buf), "alt x100 ft · %ds ago", (int)age);
+  } else {
+    snprintf(buf, sizeof(buf), "alt x100 ft · stale");
+  }
   ui_text(ctx, GRect(b.origin.x, fy + 14, b.size.w, 13),
-          FONT_KEY_GOTHIC_09, "altitude x100 ft", GTextAlignmentCenter, ui_dim);
+          FONT_KEY_GOTHIC_09, buf, GTextAlignmentCenter,
+          traffic_is_stale() ? ui_warn : ui_dim);
 }
 
 // ------------------------------------------------------------------- list
@@ -180,11 +224,24 @@ void page_traffic_render(GContext *ctx, GRect b) {
     return;
   }
   if (g.tfc_count == 0) {
+    // Two different things used to look identical here. Never having heard
+    // from the phone is not the same as having looked and found nothing, and
+    // neither of them is good news: an empty page means no information, not
+    // no traffic, so it is not drawn in the colour that means "all clear".
+    bool ever = g.tfc_ts != 0;
     ui_text(ctx, GRect(b.origin.x, b.origin.y + 24, b.size.w, 30),
-            FONT_KEY_GOTHIC_24_BOLD, "NO TRAFFIC", GTextAlignmentCenter, ui_good);
-    snprintf(buf, sizeof(buf), "within %d NM", g.cfg.traffic_radius_nm);
+            FONT_KEY_GOTHIC_24_BOLD, ever ? "NONE SEEN" : "NO DATA",
+            GTextAlignmentCenter, ever ? ui_fg : ui_warn);
+    if (!ever) {
+      snprintf(buf, sizeof(buf), "no traffic report yet");
+    } else if (traffic_is_stale()) {
+      snprintf(buf, sizeof(buf), "last checked %ds ago", (int)traffic_age_s());
+    } else {
+      snprintf(buf, sizeof(buf), "within %d NM", g.cfg.traffic_radius_nm);
+    }
     ui_text(ctx, GRect(b.origin.x, b.origin.y + 54, b.size.w, 20),
-            FONT_KEY_GOTHIC_14, buf, GTextAlignmentCenter, ui_dim);
+            FONT_KEY_GOTHIC_14, buf, GTextAlignmentCenter,
+            traffic_is_stale() ? ui_warn : ui_dim);
     ui_text(ctx, GRect(b.origin.x, b.origin.y + 76, b.size.w, 40),
             FONT_KEY_GOTHIC_14,
             "ADS-B only. Not all aircraft transmit.", GTextAlignmentCenter, ui_dim);
@@ -204,12 +261,12 @@ void page_traffic_render(GContext *ctx, GRect b) {
 void page_traffic_select(void) {
   g.cfg.traffic_orient = (uint8_t)((g.cfg.traffic_orient + 1) % 3);
   compass_apply_mode();
-  state_save();
+  state_save_soon();
 }
 
 // Switching between the plan view and the list is a display choice, so it does
 // not go back to the network; the feed refreshes on its own timer.
 void page_traffic_select_long(void) {
   g.cfg.traffic_radar = !g.cfg.traffic_radar;
-  state_save();
+  state_save_soon();
 }

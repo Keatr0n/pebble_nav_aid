@@ -81,7 +81,29 @@ void state_init(void) {
   }
 }
 
+// Flash is not free and persist_write_data is not cheap. Anything the pilot
+// can sit and press repeatedly -- cycling the radar orientation, say -- marks
+// the state dirty instead and the write happens once the presses stop.
+static AppTimer *s_save_timer;
+
+static void flush_save(void *data) {
+  s_save_timer = NULL;
+  state_save();
+}
+
+void state_save_soon(void) {
+  if (s_save_timer) {
+    app_timer_reschedule(s_save_timer, 4000);
+  } else {
+    s_save_timer = app_timer_register(4000, flush_save, NULL);
+  }
+}
+
 void state_save(void) {
+  if (s_save_timer) {
+    app_timer_cancel(s_save_timer);
+    s_save_timer = NULL;
+  }
   persist_write_int(PK_VERSION, STATE_VERSION);
   persist_write_data(PK_CONFIG, &g.cfg, sizeof(g.cfg));
   WptMeta meta = { g.wpt_count, g.wpt_active };

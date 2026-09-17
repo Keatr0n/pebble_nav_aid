@@ -32,10 +32,24 @@ void fmt_hm(char *buf, size_t n, uint32_t secs) {
   snprintf(buf, n, "%u:%02u", (unsigned)h, (unsigned)m);
 }
 
+// On a 12-hour watch the meridiem is not decoration: this formats ETAs and
+// sunset as well as the header clock, and "07:30" for an arrival is twelve
+// hours ambiguous on exactly the page a VFR pilot uses to think about last
+// light. A single trailing letter costs less width than " AM" and is still
+// unmistakable.
 void fmt_clock(char *buf, size_t n, time_t when) {
   struct tm *t = localtime(&when);
   if (!t) { snprintf(buf, n, "--:--"); return; }
-  strftime(buf, n, clock_is_24h_style() ? "%H:%M" : "%I:%M", t);
+  if (clock_is_24h_style()) {
+    strftime(buf, n, "%H:%M", t);
+    return;
+  }
+  strftime(buf, n, "%I:%M", t);
+  size_t len = strlen(buf);
+  if (len + 2 <= n) {
+    buf[len] = t->tm_hour < 12 ? 'a' : 'p';
+    buf[len + 1] = '\0';
+  }
 }
 
 void fmt_course(char *buf, size_t n, float true_deg) {

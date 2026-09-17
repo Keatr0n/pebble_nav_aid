@@ -4,6 +4,63 @@ static bool s_pos_updated;
 static bool s_tfc_updated;
 static time_t s_last_tfc_alert;
 
+// Traffic and the route both arrive as a count followed by one message per
+// entry, and AppMessage delivers those one at a time. Committing each as it
+// lands would leave the display showing a new count against the previous
+// set's contents, and it ran the proximity alert over the previous poll's
+// targets -- always a cycle behind, which on the 60 s background cadence is
+// a long time to be told late about something at three miles. It also meant
+// a message lost in a stall left half of one route spliced onto half of
+// another with nothing to say so. Both sets are staged and swapped in whole,
+// or not at all.
+static Traffic s_tfc_stage[MAX_TRAFFIC];
+static uint8_t s_tfc_expect, s_tfc_have;
+static Waypoint s_wpt_stage[MAX_WAYPOINTS];
+static uint8_t s_wpt_expect, s_wpt_have;
+static bool s_wpt_reset;
+
+// Staging turns a lost route message from silent corruption into silent
+// staleness, which is better but still silent: the pilot would be looking at
+// the previous route while the phone believed it had sent the new one. So an
+// incomplete set is given a few seconds to finish and then asked for again.
+// Capped, because a link that is properly down should not be nagged forever.
+#define WPT_STAGE_TIMEOUT_MS 8000
+#define WPT_STAGE_MAX_RETRY  2
+static AppTimer *s_wpt_timer;
+static uint8_t s_wpt_retry;
+
+static void wpt_stage_timeout(void *data) {
+  s_wpt_timer = NULL;
+  if (s_wpt_expect == 0) return;  // completed after all
+  s_wpt_expect = 0;
+  s_wpt_have = 0;
+  if (s_wpt_retry < WPT_STAGE_MAX_RETRY) {
+    s_wpt_retry++;
+    APP_LOG(APP_LOG_LEVEL_WARNING, "route incomplete, asking again");
+    comm_request_route();
+  } else {
+    snprintf(g.status, sizeof(g.status), "Route incomplete - check link");
+    pages_mark_dirty();
+  }
+}
+
+static void wpt_stage_arm(void) {
+  if (s_wpt_timer) {
+    app_timer_reschedule(s_wpt_timer, WPT_STAGE_TIMEOUT_MS);
+  } else {
+    s_wpt_timer = app_timer_register(WPT_STAGE_TIMEOUT_MS, wpt_stage_timeout, NULL);
+  }
+}
+
+static void wpt_stage_done(void) {
+  if (s_wpt_timer) {
+    app_timer_cancel(s_wpt_timer);
+    s_wpt_timer = NULL;
+  }
+  s_wpt_expect = 0;
+  s_wpt_retry = 0;
+}
+
 static void copy_str(char *dst, size_t n, const char *src) {
   if (!src) { dst[0] = '\0'; return; }
   strncpy(dst, src, n - 1);
@@ -88,39 +145,68 @@ static void inbox(DictionaryIterator *iter, void *context) {
   if (wtot) {
     uint8_t n = wtot->value->uint8;
     if (n > MAX_WAYPOINTS) n = MAX_WAYPOINTS;
-    g.wpt_count = n;
     // Relaunching mid-flight must not throw away which leg you are on, so the
     // active waypoint survives an identical route being re-sent. A route the
     // pilot actually edited is a different matter: leg 3 of the old route is
     // meaningless in the new one, so the phone flags that and we start over.
     Tuple *reset = dict_find(iter, MESSAGE_KEY_WptReset);
-    if ((reset && reset->value->uint8) || g.wpt_active >= n) g.wpt_active = 0;
-    g.prev_dist_nm = -1.0f;
-    g.receding_count = 0;
+    s_wpt_reset = reset && reset->value->uint8;
+    s_wpt_expect = n;
+    s_wpt_have = 0;
+    if (n == 0) {
+      g.wpt_count = 0;
+      g.wpt_active = 0;
+      g.prev_dist_nm = -1.0f;
+      g.receding_count = 0;
+      wpt_stage_done();
+      state_save();
+    } else {
+      wpt_stage_arm();
+    }
   }
   Tuple *widx = dict_find(iter, MESSAGE_KEY_WptIdx);
-  if (widx && widx->value->uint8 < MAX_WAYPOINTS) {
+  if (widx && s_wpt_expect > 0 && widx->value->uint8 < MAX_WAYPOINTS) {
     uint8_t i = widx->value->uint8;
     Waypoint w;
     memset(&w, 0, sizeof(w));
     GET_STR(MESSAGE_KEY_WptName, w.name, WPT_NAME_LEN);
     GET_I32(MESSAGE_KEY_WptLat, w.lat_e6);
     GET_I32(MESSAGE_KEY_WptLon, w.lon_e6);
-    g.wpts[i] = w;
-    if (i >= g.wpt_count) g.wpt_count = i + 1;
-    state_save();
+    s_wpt_stage[i] = w;
+    if (i + 1 > s_wpt_have) s_wpt_have = i + 1;
+    wpt_stage_arm();
+
+    if (s_wpt_have >= s_wpt_expect) {
+      memcpy(g.wpts, s_wpt_stage, sizeof(Waypoint) * s_wpt_expect);
+      g.wpt_count = s_wpt_expect;
+      if (s_wpt_reset || g.wpt_active >= g.wpt_count) g.wpt_active = 0;
+      g.prev_dist_nm = -1.0f;
+      g.receding_count = 0;
+      wpt_stage_done();
+      // One write per route rather than one per waypoint: the old code put the
+      // whole of persistent storage down twenty-four times to load one route.
+      state_save();
+    }
   }
 
   Tuple *ttot = dict_find(iter, MESSAGE_KEY_TfcTotal);
   if (ttot) {
     uint8_t n = ttot->value->uint8;
     if (n > MAX_TRAFFIC) n = MAX_TRAFFIC;
-    g.tfc_count = n;
-    g.tfc_ts = time(NULL);
-    s_tfc_updated = true;
+    s_tfc_expect = n;
+    s_tfc_have = 0;
+    // An empty poll is complete the moment it is announced.
+    if (n == 0) {
+      g.tfc_count = 0;
+      g.tfc_ts = time(NULL);
+      s_tfc_expect = 0;
+    }
   }
   Tuple *tidx = dict_find(iter, MESSAGE_KEY_TfcIdx);
-  if (tidx && tidx->value->uint8 < MAX_TRAFFIC) {
+  // A target with no count ahead of it means the count was lost in transit.
+  // Dropping it keeps the last complete picture rather than building a new
+  // one out of two polls.
+  if (tidx && s_tfc_expect > 0 && tidx->value->uint8 < MAX_TRAFFIC) {
     uint8_t i = tidx->value->uint8;
     Traffic t;
     memset(&t, 0, sizeof(t));
@@ -132,8 +218,18 @@ static void inbox(DictionaryIterator *iter, void *context) {
     GET_I32(MESSAGE_KEY_TfcAlt, t.alt_ft);
     GET_I16(MESSAGE_KEY_TfcVs, t.vs_fpm);
     GET_I16(MESSAGE_KEY_TfcGs, t.gs_kt);
-    g.tfc[i] = t;
-    if (i >= g.tfc_count) g.tfc_count = i + 1;
+    s_tfc_stage[i] = t;
+    if (i + 1 > s_tfc_have) s_tfc_have = i + 1;
+
+    if (s_tfc_have >= s_tfc_expect) {
+      memcpy(g.tfc, s_tfc_stage, sizeof(Traffic) * s_tfc_expect);
+      g.tfc_count = s_tfc_expect;
+      g.tfc_ts = time(NULL);
+      s_tfc_expect = 0;
+      // Only now, with a complete and current set, is it worth asking whether
+      // anything out there is close.
+      s_tfc_updated = true;
+    }
   }
 
   Tuple *station = dict_find(iter, MESSAGE_KEY_WxStation);
